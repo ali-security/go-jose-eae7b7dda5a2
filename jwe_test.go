@@ -24,8 +24,31 @@ import (
 	"crypto/x509"
 	"math/big"
 	"regexp"
+	"strings"
 	"testing"
+
+	"github.com/go-jose/go-jose/v4/json"
 )
+
+func TestUnexpectedAlgorithmCheckedBeforeHeadersJWE(t *testing.T) {
+	// A message with an unexpected algorithm must be rejected as such, before
+	// the rest of the header, including any embedded key, is parsed.
+	protected := newBuffer([]byte(`{"alg":"RSA1_5","enc":"A128GCM","jwk":"not a key"}`)).base64()
+
+	messages := map[string]string{
+		"compact":   protected + ".dGVzdA.dGVzdA.dGVzdA.dGVzdA",
+		"flattened": `{"protected":"` + protected + `","encrypted_key":"dGVzdA","iv":"dGVzdA","ciphertext":"dGVzdA","tag":"dGVzdA"}`,
+		"general":   `{"protected":"` + protected + `","recipients":[{"encrypted_key":"dGVzdA"}],"iv":"dGVzdA","ciphertext":"dGVzdA","tag":"dGVzdA"}`,
+	}
+	for name, msg := range messages {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseEncrypted(msg, []KeyAlgorithm{RSA_OAEP}, []ContentEncryption{A128GCM})
+			if err == nil || !regexp.MustCompile(`unexpected key algorithm`).MatchString(err.Error()) {
+				t.Fatalf("expected unexpected key algorithm error, got %v", err)
+			}
+		})
+	}
+}
 
 func TestCompactParseJWE(t *testing.T) {
 	// Should parse
@@ -773,5 +796,13 @@ func BenchmarkParseEncryptedCompat(b *testing.B) {
 		if _, err := ParseEncryptedCompact(msg, []KeyAlgorithm{RSA_OAEP}, []ContentEncryption{A128GCM}); err != nil {
 			panic(err)
 		}
+	}
+}
+
+func TestPrivateEPKRejected(t *testing.T) {
+	epk := json.RawMessage(`{"kty":"EC","crv":"P-256","x":"AQAB","y":"AQAB","d":"AQAB"}`)
+	headers := rawHeader{headerEPK: &epk}
+	if _, err := headers.getEPK(); err == nil || !strings.Contains(err.Error(), "JWK contains private parameters") {
+		t.Errorf("expected private parameters error, got %v", err)
 	}
 }
